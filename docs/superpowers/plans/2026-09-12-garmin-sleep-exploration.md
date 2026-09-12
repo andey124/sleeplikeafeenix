@@ -813,10 +813,8 @@ Execute Tasks 1–4 sequentially because later tasks consume earlier interfaces 
 
 1. dispatch a fresh implementation worker with only the spec, plan task, current commit, TDD requirement, and that task's write set;
 2. inspect its diff and rerun the task's verification locally;
-3. dispatch a fresh spec-compliance reviewer that may read but not edit;
-4. send required corrections back to the same implementer and repeat the spec review;
-5. dispatch a fresh code-quality reviewer that may read but not edit;
-6. send required corrections back to the same implementer and repeat the quality review;
-7. close all three agents before starting the next task.
+3. dispatch a fresh read-only task reviewer that returns separate spec-compliance and code-quality verdicts;
+4. send required corrections back to the same implementer and dispatch a scoped re-review after each fix round;
+5. close the implementer and reviewer agents before starting the next task.
 
 After Task 4, run the complete verification suite in the controller, inspect the commit range from `9217ae7` to `HEAD`, and perform one final repository-wide review before attempting the real credential-gated run.
