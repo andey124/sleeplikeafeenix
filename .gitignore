@@ -1,2 +1,17 @@
 garmin-cycling-merge/
 .superpowers/
+.venv/
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+.env.*
+data/
+reports/
+.garminconnect/
+garmin_tokens.json
+oauth1_token.json
+oauth2_token.json
