@@ -1,4 +1,6 @@
+import json
 from datetime import UTC, date, datetime
+from pathlib import Path
 from statistics import median
 from typing import Any
 
@@ -222,3 +224,225 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
         "series": sorted(series, key=lambda item: item["path"]),
         "relevant_paths": sorted(relevant_paths),
     }
+
+
+_ANSWER_GROUPS = (
+    ("Schlafgrenzen", "boundaries"),
+    ("Schlafphasen", "phases"),
+    ("Respiration", "respiration"),
+    ("SpO2", "spo2"),
+    ("Bewegung/Unruhe", "movement"),
+    ("Herzfrequenz", "heart_rate"),
+    ("Stress", "stress"),
+    ("HRV", "hrv"),
+    ("Body Battery", "body_battery"),
+)
+
+
+def _matches_answer_group(path: str, group: str) -> bool:
+    lowered = path.casefold()
+    if group == "boundaries":
+        return "sleep" in lowered and any(
+            word in lowered
+            for word in ("start", "end", "begin", "stop", "bed", "wake")
+        )
+    if group == "phases":
+        return any(word in lowered for word in ("stage", "phase", "deep", "light", "rem"))
+    if group == "respiration":
+        return any(word in lowered for word in ("respiration", "breath"))
+    if group == "spo2":
+        return any(word in lowered for word in ("spo2", "oxygen", "saturation"))
+    if group == "movement":
+        return any(word in lowered for word in ("movement", "restless", "motion"))
+    if group == "heart_rate":
+        return any(word in lowered for word in ("heartrate", "heart_rate", "heart rate", "pulse"))
+    if group == "stress":
+        return "stress" in lowered
+    if group == "hrv":
+        return any(word in lowered for word in ("hrv", "variability"))
+    return any(word in lowered for word in ("bodybattery", "body_battery", "body battery"))
+
+
+def _format_number(value: int | float) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _format_original(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _timestamp_evidence(representation: str) -> str:
+    return {
+        "iso-offset": "ISO-Wert enthält einen numerischen Offset",
+        "explicit-utc-field": "Feldpfad nennt GMT oder UTC",
+        "epoch-ms-candidate": "numerischer Kandidat für Unix-Epoche in Millisekunden nahe am angeforderten Datum",
+        "epoch-s-candidate": "numerischer Kandidat für Unix-Epoche in Sekunden nahe am angeforderten Datum",
+        "naive-local": "naiver lokaler Wert ohne auflösbare Zeitzone",
+    }.get(representation, "keine weitere Zeitzonen-Evidenz")
+
+
+def render_report(
+    raw_dir: Path,
+    *,
+    run_id: str,
+    dates: list[str],
+    failures: dict[str, dict[str, str]],
+    metadata: dict[str, str],
+) -> str:
+    raw_files = sorted(
+        raw_dir.glob("*/*.json"), key=lambda path: path.as_posix()
+    )
+    analyzed_files: list[tuple[Path, str, dict[str, Any]]] = []
+    for path in raw_files:
+        cdate = path.parent.name
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        analyzed_files.append(
+            (
+                path,
+                path.relative_to(raw_dir).as_posix(),
+                analyze_payload(payload, date.fromisoformat(cdate)),
+            )
+        )
+
+    lines = ["# Garmin-Schlafdaten: Exploration", "", "## Lauf", "", f"- Lauf-ID: `{run_id}`"]
+    lines.append(
+        f"- Angeforderte Daten: {', '.join(f'`{cdate}`' for cdate in dates) or 'keine'}"
+    )
+    for key, value in sorted(metadata.items()):
+        lines.append(f"- {key}: `{value}`")
+
+    lines.extend(["", "## Abrufstatus", ""])
+    files_by_date: dict[str, list[str]] = {}
+    for _, relative, _ in analyzed_files:
+        cdate, endpoint_json = relative.split("/", 1)
+        files_by_date.setdefault(cdate, []).append(endpoint_json.removesuffix(".json"))
+    status_dates = sorted(set(dates) | set(files_by_date) | set(failures))
+    for cdate in status_dates:
+        successes = sorted(files_by_date.get(cdate, []))
+        date_failures = failures.get(cdate, {})
+        successful_text = ", ".join(f"`{endpoint}`" for endpoint in successes) or "keine"
+        failed_text = ", ".join(
+            f"`{endpoint}` ({message})"
+            for endpoint, message in sorted(date_failures.items())
+        ) or "keine"
+        lines.append(
+            f"- `{cdate}` — erfolgreich: {successful_text}; fehlgeschlagen: {failed_text}"
+        )
+
+    lines.extend(["", "## Rohdateien", ""])
+    if analyzed_files:
+        lines.extend(f"- `{relative}`" for _, relative, _ in analyzed_files)
+    else:
+        lines.append("keine Rohdateien beobachtet")
+
+    lines.extend(["", "## Gefundene Strukturen", ""])
+    if analyzed_files:
+        for _, relative, analysis in analyzed_files:
+            lines.extend([f"### `{relative}`", ""])
+            for path, observation in analysis["paths"].items():
+                details = (
+                    f"Typen: {', '.join(observation['types'])}; "
+                    f"Vorkommen: {observation['count']}"
+                )
+                if observation["nulls"]:
+                    details += f"; null: {observation['nulls']}"
+                if observation["empties"]:
+                    details += f"; leer: {observation['empties']}"
+                lines.append(f"- `{path}` — {details}")
+    else:
+        lines.append("keine Strukturen beobachtet")
+
+    lines.extend(["", "## Zeitreihen und Sampling-Intervalle", ""])
+    series_found = False
+    for _, relative, analysis in analyzed_files:
+        for series in analysis["series"]:
+            series_found = True
+            intervals = series["intervals"]
+            interval_text = (
+                f"Minimum: {_format_number(intervals['min_seconds'])}, "
+                f"Median: {_format_number(intervals['median_seconds'])}, "
+                f"Maximum: {_format_number(intervals['max_seconds'])}"
+                if "median_seconds" in intervals
+                else "keine zwei eindeutigen Zeitstempel für positive Intervalle"
+            )
+            lines.append(
+                f"- `{relative}` `{series['path']}` — "
+                f"Zeitstempelpfad: `{series['timestamp_path']}`; "
+                f"Samples: {series['samples']}; Intervalle in Sekunden: {interval_text}; "
+                f"Duplikate: {intervals['duplicates']}; "
+                f"außer der Reihenfolge: {intervals['out_of_order']}"
+            )
+    if not series_found:
+        lines.append("keine Zeitreihen beobachtet")
+
+    lines.extend(["", "## Zeitstempel und Zeitzonenhinweise", ""])
+    timestamps_found = False
+    representations: set[str] = set()
+    for _, relative, analysis in analyzed_files:
+        for timestamp in analysis["timestamps"]:
+            timestamps_found = True
+            representation = timestamp["representation"]
+            representations.add(representation)
+            lines.append(
+                f"- `{relative}` `{timestamp['path']}` — "
+                f"Originalwert: `{_format_original(timestamp['value'])}`; "
+                f"Darstellung: `{representation}`; "
+                f"Zeitzonen-Evidenz: {_timestamp_evidence(representation)}."
+            )
+    if representations:
+        lines.append(
+            f"- Beobachtete Darstellungsnamen: {', '.join(f'`{name}`' for name in sorted(representations))}"
+        )
+    if not timestamps_found:
+        lines.append("keine Zeitstempel beobachtet")
+
+    lines.extend(["", "## Für die Schlafanalyse relevante Felder", ""])
+    relevant_found = False
+    for _, relative, analysis in analyzed_files:
+        for path in analysis["relevant_paths"]:
+            relevant_found = True
+            lines.append(f"- `{relative}` `{path}`")
+    if not relevant_found:
+        lines.append("keine passenden Felder beobachtet")
+
+    lines.extend(["", "## Antworten aus den beobachteten Daten", ""])
+    observed_paths = [
+        (relative, path)
+        for _, relative, analysis in analyzed_files
+        for path in analysis["paths"]
+    ]
+    for label, group in _ANSWER_GROUPS:
+        lines.extend([f"### {label}", ""])
+        matches = sorted(
+            (relative, path)
+            for relative, path in observed_paths
+            if _matches_answer_group(path, group)
+        )
+        if matches:
+            lines.append("Beobachtete Pfade:")
+            lines.extend(f"- `{relative}` `{path}`" for relative, path in matches)
+        else:
+            lines.append("keine passenden Felder beobachtet")
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Empfehlung für spätere UTC-Normalisierung",
+            "",
+            "Für jeden später normalisierten Zeitstempel vier getrennte Felder beibehalten:",
+            "- `Originalwert`",
+            "- `Zeitzonen-Evidenz`",
+            "- `Umrechnungsregel`",
+            "- `Kanonischer UTC-Wert`",
+            "",
+            "Naive lokale Zeitstempel bleiben in Phase 0 ungeklärt; es wird keine Zeitzone geraten und keine Umrechnung angewendet.",
+            "",
+            "## Einschränkungen",
+            "",
+            "- Diese Ausführung ist eine lokale Struktur-Exploration ohne medizinische Interpretation, Diagnose oder Bewertung.",
+            "- Zeitstempel werden beobachtet und klassifiziert, aber nicht als historische Ortszeit normalisiert.",
+            "- Garmin-API-Antworten können instabil sein; einzelne Endpoint-Fehler werden separat ausgewiesen.",
+            "- Beobachtete Felder hängen von Gerät, Konto, Region und verfügbaren Garmin-Daten ab.",
+        ]
+    )
+    return "\n".join(lines) + "\n"

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import UTC, date, datetime
@@ -8,8 +9,13 @@ from unittest.mock import patch
 from garminconnect import Garmin, GarminConnectAuthenticationError
 
 from src.garmin_client import ENDPOINTS, authenticate, fetch_date
-from src.explore import new_run_id, resolve_dates, write_raw
-from src.analysis import analyze_payload, classify_timestamp, summarize_intervals
+from src.explore import build_parser, main, new_run_id, resolve_dates, write_raw
+from src.analysis import (
+    analyze_payload,
+    classify_timestamp,
+    render_report,
+    summarize_intervals,
+)
 
 
 class TimestampAnalysisTests(unittest.TestCase):
@@ -253,3 +259,65 @@ class GarminBoundaryTests(unittest.TestCase):
         self.assertEqual(len(calls), len(ENDPOINTS))
         self.assertIn("sleep", payloads)
         self.assertIn("stats", payloads)
+
+
+class ReportTests(unittest.TestCase):
+    def test_report_describes_files_series_timezone_evidence_and_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_dir = Path(temporary) / "raw"
+            write_raw(
+                raw_dir,
+                "2026-09-12",
+                "heart_rate",
+                {"heartRateValues": [[1789167600000, 60], [1789167660000, 61]]},
+            )
+            report = render_report(
+                raw_dir,
+                run_id="20260912T120000000000Z",
+                dates=["2026-09-12"],
+                failures={"2026-09-12": {"spo2": "RuntimeError: unavailable"}},
+                metadata={"python": "3.14.3", "garminconnect": "0.3.13"},
+            )
+        self.assertIn("# Garmin-Schlafdaten: Exploration", report)
+        self.assertIn("heart_rate.json", report)
+        self.assertIn("Median: 60", report)
+        self.assertIn("epoch-ms-candidate", report)
+        self.assertIn("spo2", report)
+        self.assertIn("UTC-Normalisierung", report)
+
+
+class CliTests(unittest.TestCase):
+    def test_parser_accepts_days_and_inclusive_range(self):
+        self.assertEqual(build_parser().parse_args(["--days", "7"]).days, 7)
+        parsed = build_parser().parse_args(
+            ["--from", "2026-09-01", "--to", "2026-09-07"]
+        )
+        self.assertEqual(parsed.start, date(2026, 9, 1))
+        self.assertEqual(parsed.end, date(2026, 9, 7))
+
+    @patch("src.explore.authenticate")
+    @patch("src.explore.fetch_date")
+    @patch("src.explore.new_run_id", return_value="20260912T120000000000Z")
+    def test_main_writes_successes_and_report_while_retaining_failures(
+        self, run_id, fetch, auth
+    ):
+        auth.return_value = object()
+        fetch.return_value = (
+            {"sleep": {"dailySleepDTO": {}}},
+            {"spo2": "unavailable"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            try:
+                os.chdir(temporary)
+                exit_code = main(["--days", "1", "--tokenstore", "tokens"])
+                raw = Path("data/raw/20260912T120000000000Z")
+                reports = list(
+                    Path("reports/20260912T120000000000Z").glob("*.md")
+                )
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(len(list(raw.rglob("sleep.json"))), 1)
+                self.assertEqual(len(reports), 1)
+                self.assertIn("spo2", reports[0].read_text(encoding="utf-8"))
+            finally:
+                os.chdir(previous)
