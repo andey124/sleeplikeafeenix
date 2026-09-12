@@ -9,6 +9,71 @@ from garminconnect import Garmin, GarminConnectAuthenticationError
 
 from src.garmin_client import ENDPOINTS, authenticate, fetch_date
 from src.explore import new_run_id, resolve_dates, write_raw
+from src.analysis import analyze_payload, classify_timestamp, summarize_intervals
+
+
+class TimestampAnalysisTests(unittest.TestCase):
+    def test_classifies_offset_gmt_local_and_nearby_epoch_without_guessing(self):
+        requested = date(2026, 9, 12)
+        self.assertEqual(
+            classify_timestamp("$.start", "2026-09-12T01:00:00+02:00", requested)["representation"],
+            "iso-offset",
+        )
+        self.assertEqual(
+            classify_timestamp("$.startGMT", "2026-09-11 23:00:00", requested)["representation"],
+            "explicit-utc-field",
+        )
+        local = classify_timestamp("$.startLocal", "2026-09-12 01:00:00", requested)
+        self.assertEqual(local["representation"], "naive-local")
+        self.assertIsNone(local["instant"])
+        self.assertEqual(
+            classify_timestamp("$.values[]", 1789174800000, requested)["representation"],
+            "epoch-ms-candidate",
+        )
+        self.assertIsNone(classify_timestamp("$.score", 97, requested))
+
+    def test_interval_summary_uses_sorted_unique_instants_and_reports_order(self):
+        instants = [
+            datetime(2026, 9, 12, 0, 2, tzinfo=UTC),
+            datetime(2026, 9, 12, 0, 0, tzinfo=UTC),
+            datetime(2026, 9, 12, 0, 1, tzinfo=UTC),
+            datetime(2026, 9, 12, 0, 1, tzinfo=UTC),
+        ]
+        self.assertEqual(
+            summarize_intervals(instants),
+            {
+                "samples": 4,
+                "duplicates": 1,
+                "out_of_order": 1,
+                "min_seconds": 60.0,
+                "median_seconds": 60.0,
+                "max_seconds": 60.0,
+            },
+        )
+
+    def test_payload_analysis_finds_pair_series_nulls_and_relevant_fields(self):
+        payload = {
+            "dailySleepDTO": {
+                "sleepStartTimestampGMT": "2026-09-11 23:00:00",
+                "sleepStartTimestampLocal": "2026-09-12 01:00:00",
+                "deepSleepSeconds": 3600,
+            },
+            "heartRateValues": [
+                [1789167600000, 60],
+                [1789167660000, None],
+                [1789167720000, 61],
+            ],
+        }
+        result = analyze_payload(payload, date(2026, 9, 12))
+        self.assertEqual(result["paths"]["$.heartRateValues[][1]"]["nulls"], 1)
+        series = next(item for item in result["series"] if item["path"] == "$.heartRateValues")
+        self.assertEqual(series["intervals"]["median_seconds"], 60.0)
+        self.assertIn("$.dailySleepDTO.deepSleepSeconds", result["relevant_paths"])
+        local = next(
+            item for item in result["timestamps"]
+            if item["path"] == "$.dailySleepDTO.sleepStartTimestampLocal"
+        )
+        self.assertEqual(local["representation"], "naive-local")
 
 
 class DateRangeTests(unittest.TestCase):
