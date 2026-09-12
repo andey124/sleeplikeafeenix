@@ -30,6 +30,8 @@ def resolve_dates(
 
 
 def new_run_id(now: datetime | None = None) -> str:
+    if now is not None and (now.tzinfo is None or now.utcoffset() is None):
+        raise ValueError("now must be timezone-aware")
     instant = now or datetime.now(UTC)
     return instant.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
 

@@ -44,6 +44,10 @@ class RawStorageTests(unittest.TestCase):
             "20260912T101112345678Z",
         )
 
+    def test_run_id_rejects_naive_datetime(self):
+        with self.assertRaisesRegex(ValueError, "timezone-aware"):
+            new_run_id(datetime(2026, 9, 12, 10, 11, 12, 345678))
+
     def test_raw_payload_is_preserved_and_never_overwritten(self):
         payload = {"values": [[1726099200000, None], [1726099260000, 97]]}
         with tempfile.TemporaryDirectory() as temporary:
