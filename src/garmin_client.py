@@ -50,6 +50,6 @@ def fetch_date(client: Garmin, cdate: str) -> tuple[dict[str, Any], dict[str, st
                 else method(cdate)
             )
         except Exception as error:
-            detail = str(error).splitlines()[0] or "no details"
+            detail = (str(error).splitlines() or ["no details"])[0]
             errors[endpoint] = f"{type(error).__name__}: {detail}"
     return payloads, errors

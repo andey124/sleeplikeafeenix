@@ -115,3 +115,22 @@ class GarminBoundaryTests(unittest.TestCase):
             ["2026-09-12", "2026-09-12"],
         )
         self.assertEqual(len(calls), len(ENDPOINTS))
+
+    def test_empty_endpoint_error_keeps_sibling_calls_isolated(self):
+        calls = []
+
+        class FakeGarmin:
+            def __getattr__(self, method_name):
+                def call(*args):
+                    calls.append((method_name, args))
+                    if method_name == "get_spo2_data":
+                        raise RuntimeError()
+                    return {"method": method_name, "args": list(args)}
+
+                return call
+
+        payloads, errors = fetch_date(FakeGarmin(), "2026-09-12")
+        self.assertTrue(errors["spo2"].endswith("no details"))
+        self.assertEqual(len(calls), len(ENDPOINTS))
+        self.assertIn("sleep", payloads)
+        self.assertIn("stats", payloads)
