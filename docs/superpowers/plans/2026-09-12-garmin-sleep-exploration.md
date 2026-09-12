@@ -246,26 +246,14 @@ Append imports and tests to `tests/test_phase0.py`:
 ```python
 from unittest.mock import patch
 
-from garminconnect import GarminConnectAuthenticationError
+from garminconnect import Garmin, GarminConnectAuthenticationError
 from src.garmin_client import ENDPOINTS, authenticate, fetch_date
 
 
 class GarminBoundaryTests(unittest.TestCase):
-    def test_registry_contains_only_inspected_methods(self):
-        self.assertEqual(
-            ENDPOINTS,
-            (
-                ("sleep", "get_sleep_data"),
-                ("spo2", "get_spo2_data"),
-                ("respiration", "get_respiration_data"),
-                ("heart_rate", "get_heart_rates"),
-                ("stress", "get_all_day_stress"),
-                ("hrv", "get_hrv_data"),
-                ("body_battery", "get_body_battery"),
-                ("body_battery_events", "get_body_battery_events"),
-                ("stats", "get_stats"),
-            ),
-        )
+    def test_every_registered_endpoint_exists_on_installed_client(self):
+        missing = [method for _, method in ENDPOINTS if not hasattr(Garmin, method)]
+        self.assertEqual(missing, [])
 
     @patch("src.garmin_client.getpass", return_value="secret")
     @patch("builtins.input", return_value="person@example.invalid")
