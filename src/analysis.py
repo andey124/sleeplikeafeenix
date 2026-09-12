@@ -158,7 +158,7 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
     series: list[dict[str, Any]] = []
     relevant_paths: set[str] = set()
 
-    def walk(path: str, value: Any) -> None:
+    def walk(path: str, value: Any, *, descend: bool = True) -> None:
         observation = observations.setdefault(
             path,
             {"types": set(), "count": 0, "nulls": 0, "empties": 0},
@@ -169,13 +169,15 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
             observation["nulls"] += 1
         elif _is_empty(value):
             observation["empties"] += 1
+        if any(word in path.casefold() for word in RELEVANT_WORDS):
+            relevant_paths.add(path)
 
         if _is_scalar(value):
             timestamp = classify_timestamp(path, value, requested_date)
             if timestamp is not None:
                 timestamps.append({"path": path, "value": value, **timestamp})
-            if any(word in path.casefold() for word in RELEVANT_WORDS):
-                relevant_paths.add(path)
+            return
+        if not descend:
             return
 
         if isinstance(value, dict):
@@ -198,7 +200,7 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
         for item in value:
             if detected is not None and isinstance(item, (list, tuple)):
                 sample_path = f"{path}[]"
-                walk(sample_path, item)
+                walk(sample_path, item, descend=False)
                 for index, child in enumerate(item):
                     walk(f"{sample_path}[{index}]", child)
             else:

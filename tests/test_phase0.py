@@ -75,6 +75,60 @@ class TimestampAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(local["representation"], "naive-local")
 
+    def test_pair_series_walks_each_sample_once_at_indexed_paths(self):
+        samples = [
+            [1789167600000, 60],
+            [1789167660000, 61],
+            [1789167720000, 62],
+        ]
+        result = analyze_payload(
+            {"heartRateValues": samples}, date(2026, 9, 12)
+        )
+        self.assertNotIn("$.heartRateValues[][]", result["paths"])
+        self.assertEqual(
+            result["paths"]["$.heartRateValues[][0]"]["count"], len(samples)
+        )
+        self.assertEqual(
+            result["paths"]["$.heartRateValues[][1]"]["count"], len(samples)
+        )
+        pair_timestamps = [
+            item
+            for item in result["timestamps"]
+            if item["path"].startswith("$.heartRateValues")
+        ]
+        self.assertEqual(len(pair_timestamps), len(samples))
+        self.assertTrue(
+            all(item["path"] == "$.heartRateValues[][0]" for item in pair_timestamps)
+        )
+
+    def test_object_timestamp_series_reports_interval_statistics(self):
+        result = analyze_payload(
+            {
+                "heartRateSamples": [
+                    {"timestampGMT": "2026-09-12 00:00:00", "value": 60},
+                    {"timestampGMT": "2026-09-12 00:01:00", "value": 61},
+                    {"timestampGMT": "2026-09-12 00:02:00", "value": 62},
+                ]
+            },
+            date(2026, 9, 12),
+        )
+        series = next(
+            item for item in result["series"] if item["path"] == "$.heartRateSamples"
+        )
+        self.assertEqual(series["timestamp_path"], "timestampGMT")
+        self.assertEqual(series["intervals"]["median_seconds"], 60.0)
+
+    def test_relevant_paths_include_observed_containers(self):
+        result = analyze_payload(
+            {
+                "heartRateValues": [[1789167600000, 60]],
+                "dailySleepDTO": {"deepSleepSeconds": 3600},
+            },
+            date(2026, 9, 12),
+        )
+        self.assertIn("$.heartRateValues", result["relevant_paths"])
+        self.assertIn("$.dailySleepDTO", result["relevant_paths"])
+
 
 class DateRangeTests(unittest.TestCase):
     def test_days_includes_today_and_preceding_dates(self):
