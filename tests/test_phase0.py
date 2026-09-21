@@ -1,7 +1,9 @@
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -153,6 +155,20 @@ class DateRangeTests(unittest.TestCase):
             ["2026-09-01", "2026-09-02", "2026-09-03"],
         )
 
+    def test_default_range_uses_seven_dates(self):
+        self.assertEqual(
+            resolve_dates(days=None, start=None, end=None, today=date(2026, 9, 12)),
+            [
+                "2026-09-06",
+                "2026-09-07",
+                "2026-09-08",
+                "2026-09-09",
+                "2026-09-10",
+                "2026-09-11",
+                "2026-09-12",
+            ],
+        )
+
     def test_invalid_ranges_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "positive"):
             resolve_dates(days=0, start=None, end=None)
@@ -285,6 +301,84 @@ class ReportTests(unittest.TestCase):
         self.assertIn("spo2", report)
         self.assertIn("UTC-Normalisierung", report)
 
+    def test_report_shows_aggregate_scalars_list_lengths_and_unit_hints(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_dir = Path(temporary) / "raw"
+            write_raw(
+                raw_dir,
+                "2026-09-12",
+                "sleep",
+                {
+                    "dailySleepDTO": {
+                        "sleepScore": 84,
+                        "sleepTimeSeconds": 28800,
+                        "sleepTimeMinutes": 480,
+                        "measurementMilliseconds": 60000,
+                        "completionPercent": 95,
+                        "completionPercentage": 95,
+                        "restingHeartRateBpm": 52,
+                        "unit": "seconds",
+                        "heartRateValues": [
+                            [1789167600000, 60],
+                            [1789167660000, 61],
+                        ],
+                        "sleepSamples": [
+                            {
+                                "timestampGMT": "2026-09-12 00:00:00",
+                                "value": 123,
+                            }
+                        ],
+                    }
+                },
+            )
+            report = render_report(
+                raw_dir,
+                run_id="20260912T120000000000Z",
+                dates=["2026-09-12"],
+                failures={},
+                metadata={"python": "3.14.3", "garminconnect": "0.3.13"},
+            )
+        aggregate = report.split(
+            "### Aggregierte Skalarwerte außerhalb von Array-Samples", 1
+        )[1].split("### Listenlängen", 1)[0]
+        self.assertIn("$.dailySleepDTO.sleepScore", aggregate)
+        self.assertIn("Skalarwert: `84`", aggregate)
+        self.assertNotIn("$.dailySleepDTO.heartRateValues[][1]", aggregate)
+        self.assertNotIn("$.dailySleepDTO.sleepSamples[].value", aggregate)
+        self.assertIn("$.dailySleepDTO.heartRateValues", report)
+        self.assertIn("Länge: 2", report)
+        for field in (
+            "unit",
+            "Seconds",
+            "Minutes",
+            "Milliseconds",
+            "Percent",
+            "Percentage",
+            "Bpm",
+        ):
+            self.assertIn(field, report)
+
+    def test_report_is_deterministic_and_keeps_empty_answer_groups_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            raw_dir = Path(temporary) / "raw"
+            write_raw(raw_dir, "2026-09-12", "z_endpoint", {"value": 1})
+            write_raw(raw_dir, "2026-09-12", "a_endpoint", {"value": 2})
+            arguments = {
+                "run_id": "20260912T120000000000Z",
+                "dates": ["2026-09-12"],
+                "failures": {},
+                "metadata": {},
+            }
+            first = render_report(raw_dir, **arguments)
+            second = render_report(raw_dir, **arguments)
+        inventory = first.split("## Rohdateien", 1)[1].split(
+            "## Gefundene Strukturen", 1
+        )[0]
+        self.assertLess(inventory.index("a_endpoint.json"), inventory.index("z_endpoint.json"))
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(
+            first.count("keine passenden Felder beobachtet"), 9
+        )
 
 class CliTests(unittest.TestCase):
     def test_parser_accepts_days_and_inclusive_range(self):
@@ -294,6 +388,26 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(parsed.start, date(2026, 9, 1))
         self.assertEqual(parsed.end, date(2026, 9, 7))
+
+    def test_parser_rejects_invalid_date_and_missing_range_companion(self):
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["--from", "not-a-date", "--to", "2026-09-07"])
+            with self.assertRaises(SystemExit):
+                main(["--from", "2026-09-01"])
+
+    @patch("src.explore.authenticate", side_effect=RuntimeError("login failed"))
+    def test_authentication_failure_creates_no_data_or_reports(self, auth):
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            try:
+                os.chdir(temporary)
+                with self.assertRaisesRegex(RuntimeError, "login failed"):
+                    main(["--days", "1"])
+                self.assertFalse(Path("data").exists())
+                self.assertFalse(Path("reports").exists())
+            finally:
+                os.chdir(previous)
 
     @patch("src.explore.authenticate")
     @patch("src.explore.fetch_date")
@@ -310,7 +424,12 @@ class CliTests(unittest.TestCase):
             previous = Path.cwd()
             try:
                 os.chdir(temporary)
-                exit_code = main(["--days", "1", "--tokenstore", "tokens"])
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(
+                        ["--from", "2026-09-12", "--to", "2026-09-12", "--tokenstore", "tokens"]
+                    )
                 raw = Path("data/raw/20260912T120000000000Z")
                 reports = list(
                     Path("reports/20260912T120000000000Z").glob("*.md")
@@ -319,5 +438,30 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(len(list(raw.rglob("sleep.json"))), 1)
                 self.assertEqual(len(reports), 1)
                 self.assertIn("spo2", reports[0].read_text(encoding="utf-8"))
+                self.assertIn(str(raw), stdout.getvalue())
+                self.assertIn(str(reports[0]), stdout.getvalue())
+                self.assertIn("Fehler 2026-09-12/spo2: unavailable", stderr.getvalue())
+            finally:
+                os.chdir(previous)
+
+    @patch("src.explore.authenticate")
+    @patch("src.explore.fetch_date")
+    @patch("src.explore.new_run_id", return_value="20260912T120000000000Z")
+    def test_main_never_overwrites_existing_report(
+        self, run_id, fetch, auth
+    ):
+        auth.return_value = object()
+        fetch.return_value = ({"sleep": {"value": 1}}, {})
+        with tempfile.TemporaryDirectory() as temporary:
+            previous = Path.cwd()
+            try:
+                os.chdir(temporary)
+                report_path = Path("reports/20260912T120000000000Z/exploration.md")
+                report_path.parent.mkdir(parents=True)
+                report_path.write_text("existing\n", encoding="utf-8")
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    with self.assertRaises(FileExistsError):
+                        main(["--days", "1"])
+                self.assertEqual(report_path.read_text(encoding="utf-8"), "existing\n")
             finally:
                 os.chdir(previous)

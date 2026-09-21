@@ -160,13 +160,28 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
     series: list[dict[str, Any]] = []
     relevant_paths: set[str] = set()
 
-    def walk(path: str, value: Any, *, descend: bool = True) -> None:
+    def walk(
+        path: str,
+        value: Any,
+        *,
+        descend: bool = True,
+        array_sample: bool = False,
+    ) -> None:
         observation = observations.setdefault(
             path,
-            {"types": set(), "count": 0, "nulls": 0, "empties": 0},
+            {
+                "types": set(),
+                "count": 0,
+                "nulls": 0,
+                "empties": 0,
+                "scalar_values": [],
+                "list_lengths": [],
+            },
         )
         observation["types"].add(type(value).__name__)
         observation["count"] += 1
+        if isinstance(value, (list, tuple)):
+            observation["list_lengths"].append(len(value))
         if value is None:
             observation["nulls"] += 1
         elif _is_empty(value):
@@ -175,6 +190,8 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
             relevant_paths.add(path)
 
         if _is_scalar(value):
+            if not array_sample:
+                observation["scalar_values"].append(value)
             timestamp = classify_timestamp(path, value, requested_date)
             if timestamp is not None:
                 timestamps.append({"path": path, "value": value, **timestamp})
@@ -184,7 +201,7 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
 
         if isinstance(value, dict):
             for key, child in value.items():
-                walk(f"{path}.{key}", child)
+                walk(f"{path}.{key}", child, array_sample=array_sample)
             return
 
         detected = _series_for_list(path, value, requested_date)
@@ -202,11 +219,11 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
         for item in value:
             if detected is not None and isinstance(item, (list, tuple)):
                 sample_path = f"{path}[]"
-                walk(sample_path, item, descend=False)
+                walk(sample_path, item, descend=False, array_sample=True)
                 for index, child in enumerate(item):
-                    walk(f"{sample_path}[{index}]", child)
+                    walk(f"{sample_path}[{index}]", child, array_sample=True)
             else:
-                walk(f"{path}[]", item)
+                walk(f"{path}[]", item, array_sample=True)
 
     walk("$", payload)
     path_result = {
@@ -215,6 +232,8 @@ def analyze_payload(payload: Any, requested_date: date) -> dict[str, Any]:
             "count": observation["count"],
             "nulls": observation["nulls"],
             "empties": observation["empties"],
+            "scalar_values": observation["scalar_values"],
+            "list_lengths": observation["list_lengths"],
         }
         for path, observation in sorted(observations.items())
     }
@@ -237,6 +256,8 @@ _ANSWER_GROUPS = (
     ("HRV", "hrv"),
     ("Body Battery", "body_battery"),
 )
+
+_UNIT_SUFFIXES = ("Seconds", "Minutes", "Milliseconds", "Percent", "Percentage", "Bpm")
 
 
 def _matches_answer_group(path: str, group: str) -> bool:
@@ -279,6 +300,21 @@ def _timestamp_evidence(representation: str) -> str:
         "epoch-s-candidate": "numerischer Kandidat für Unix-Epoche in Sekunden nahe am angeforderten Datum",
         "naive-local": "naiver lokaler Wert ohne auflösbare Zeitzone",
     }.get(representation, "keine weitere Zeitzonen-Evidenz")
+
+
+def _field_name(path: str) -> str:
+    return path.rsplit(".", 1)[-1].replace("[]", "")
+
+
+def _unit_hints(path: str) -> list[str]:
+    field_name = _field_name(path)
+    hints = []
+    if "unit" in field_name.casefold():
+        hints.append("unit")
+    for suffix in _UNIT_SUFFIXES:
+        if field_name.casefold().endswith(suffix.casefold()):
+            hints.append(suffix)
+    return hints
 
 
 def render_report(
@@ -351,6 +387,46 @@ def render_report(
                 lines.append(f"- `{path}` — {details}")
     else:
         lines.append("keine Strukturen beobachtet")
+
+    lines.extend(["", "### Aggregierte Skalarwerte außerhalb von Array-Samples", ""])
+    scalar_found = False
+    for _, relative, analysis in analyzed_files:
+        for path, observation in analysis["paths"].items():
+            for value in observation["scalar_values"]:
+                scalar_found = True
+                lines.append(
+                    f"- `{relative}` `{path}` — Skalarwert: `{_format_original(value)}` "
+                    f"(Typ: `{type(value).__name__}`)"
+                )
+    if not scalar_found:
+        lines.append("keine aggregierten Skalarwerte beobachtet")
+
+    lines.extend(["", "### Listenlängen", ""])
+    list_length_found = False
+    for _, relative, analysis in analyzed_files:
+        for path, observation in analysis["paths"].items():
+            for length in observation["list_lengths"]:
+                list_length_found = True
+                lines.append(f"- `{relative}` `{path}` — Länge: {length}")
+    if not list_length_found:
+        lines.append("keine Listenlängen beobachtet")
+
+    lines.extend(["", "### Einheiten- und Feldnamenhinweise", ""])
+    unit_hint_found = False
+    for _, relative, analysis in analyzed_files:
+        for path in analysis["paths"]:
+            for hint in _unit_hints(path):
+                unit_hint_found = True
+                if hint == "unit":
+                    lines.append(
+                        f"- `{relative}` `{path}` — Feldname enthält ausdrücklich `unit`"
+                    )
+                else:
+                    lines.append(
+                        f"- `{relative}` `{path}` — Feldnamen-Suffix beobachtet: `{hint}`"
+                    )
+    if not unit_hint_found:
+        lines.append("keine Einheiten- oder Feldnamenshinweise beobachtet")
 
     lines.extend(["", "## Zeitreihen und Sampling-Intervalle", ""])
     series_found = False
