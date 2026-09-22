@@ -12,6 +12,9 @@ __pycache__/
 data/
 reports/
 .garminconnect/
+.garth/
+.tokens/
+tokens/
 garmin_tokens.json
 oauth1_token.json
 oauth2_token.json

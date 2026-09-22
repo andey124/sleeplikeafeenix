@@ -42,9 +42,9 @@ class TimestampAnalysisTests(unittest.TestCase):
 
     def test_interval_summary_uses_sorted_unique_instants_and_reports_order(self):
         instants = [
-            datetime(2026, 9, 12, 0, 2, tzinfo=UTC),
             datetime(2026, 9, 12, 0, 0, tzinfo=UTC),
             datetime(2026, 9, 12, 0, 1, tzinfo=UTC),
+            datetime(2026, 9, 12, 0, 2, tzinfo=UTC),
             datetime(2026, 9, 12, 0, 1, tzinfo=UTC),
         ]
         self.assertEqual(
@@ -82,6 +82,23 @@ class TimestampAnalysisTests(unittest.TestCase):
             if item["path"] == "$.dailySleepDTO.sleepStartTimestampLocal"
         )
         self.assertEqual(local["representation"], "naive-local")
+
+    def test_pair_series_keeps_valid_samples_when_one_timestamp_is_invalid(self):
+        result = analyze_payload(
+            {
+                "heartRateValues": [
+                    [1789167600000, 60],
+                    ["invalid", 61],
+                    [1789167720000, 62],
+                ]
+            },
+            date(2026, 9, 12),
+        )
+        self.assertEqual(len(result["series"]), 1)
+        series = result["series"][0]
+        self.assertEqual(series["samples"], 3)
+        self.assertEqual(series["intervals"]["samples"], 2)
+        self.assertEqual(series["intervals"]["median_seconds"], 120.0)
 
     def test_pair_series_walks_each_sample_once_at_indexed_paths(self):
         samples = [

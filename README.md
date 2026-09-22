@@ -20,7 +20,7 @@ Standardmäßig verwendet der CLI-Aufruf das Tokenverzeichnis `~/.garminconnect`
 ~/.garminconnect/garmin_tokens.json
 ```
 
-Das Verzeichnis kann mit `--tokenstore PATH` oder der Umgebungsvariable `GARMINTOKENS` überschrieben werden. `--tokenstore` hat Vorrang vor dem Umgebungswert.
+Das Verzeichnis kann mit `--tokenstore PATH` oder der Umgebungsvariable `GARMINTOKENS` überschrieben werden. `--tokenstore` hat Vorrang vor dem Umgebungswert. Ein eigener Tokenpfad sollte außerhalb des Repositorys liegen. Für bewusst projektlokale Ablage sind nur die bereits ignorierten Verzeichnisse `.garminconnect/`, `.garth/`, `.tokens/` oder `tokens/` zu verwenden; ein beliebiger nicht ignorierter Pfad kann Geheimnisse in Git sichtbar machen.
 
 Die vorhandenen Dateien `oauth1_token.json` und `oauth2_token.json` sind das alte Garth-Format. `garminconnect==0.3.13` lädt diese Dateien nicht als aktuelles Tokenformat; deshalb ist einmalig eine interaktive Anmeldung erforderlich. Danach kann die Bibliothek `garmin_tokens.json` im gewählten Tokenverzeichnis anlegen und für weitere Läufe verwenden.
 

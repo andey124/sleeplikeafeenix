@@ -69,7 +69,7 @@ def classify_timestamp(
 
 
 def summarize_intervals(instants: list[datetime]) -> dict[str, int | float]:
-    duplicates = sum(right == left for left, right in zip(instants, instants[1:]))
+    duplicates = len(instants) - len(set(instants))
     out_of_order = sum(right < left for left, right in zip(instants, instants[1:]))
     result: dict[str, int | float] = {
         "samples": len(instants),
@@ -114,15 +114,19 @@ def _series_for_list(
         isinstance(item, (list, tuple))
         and len(item) >= 2
         and _is_scalar(item[0])
-        and classify_timestamp(f"{path}[][0]", item[0], requested_date) is not None
         for item in non_empty
     ):
-        instants = []
-        for item in non_empty:
-            timestamp = classify_timestamp(f"{path}[][0]", item[0], requested_date)
-            if timestamp is not None and timestamp["instant"] is not None:
-                instants.append(timestamp["instant"])
-        return "[0]", instants
+        timestamps = [
+            classify_timestamp(f"{path}[][0]", item[0], requested_date)
+            for item in non_empty
+        ]
+        if any(timestamp is not None for timestamp in timestamps):
+            instants = [
+                timestamp["instant"]
+                for timestamp in timestamps
+                if timestamp is not None and timestamp["instant"] is not None
+            ]
+            return "[0]", instants
 
     if not all(isinstance(item, dict) for item in non_empty):
         return None
