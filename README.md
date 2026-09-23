@@ -26,6 +26,14 @@ Die vorhandenen Dateien `oauth1_token.json` und `oauth2_token.json` sind das alt
 
 E-Mail, Passwort und ein gegebenenfalls angeforderter MFA-Code dürfen nur in das lokale Terminal eingegeben werden. Sie gehören nicht in Chat-Nachrichten, Quelltext, Markdown-Dateien oder Umgebungsvariablen. Dieses Projekt speichert keine Klartext-Zugangsdaten.
 
+### Beobachtungen zur Anmeldung
+
+Bei einem lokalen Anmeldeversuch am 23. September 2026 antwortete Garmin während der Anmeldung mit HTTP 429. Zu diesem Zeitpunkt waren noch keine Rohdaten- oder Reportverzeichnisse angelegt. Anmeldeversuche sind deshalb als streng pro IP begrenzt zu behandeln: Nach einem 429 nicht automatisch oder unmittelbar erneut anmelden. Der Abruf soll vorhandene Token bevorzugen und die interaktive Anmeldung nur verwenden, wenn kein nutzbarer Token vorhanden ist.
+
+Der fehlgeschlagene Versuch hatte bereits `garmin_tokens.json` geschrieben, bevor die nachfolgende Profil- und Einstellungsprüfung den 429 meldete. Die bloße Existenz der Datei beweist daher noch keine vollständig geprüfte Sitzung. Ein späterer Lauf soll den Token ohne Zugangsdaten validieren; bei einem weiteren 429 wird der Lauf beendet, statt auf eine neue interaktive Anmeldung zurückzufallen.
+
+Ein separater, read-only Test mit `garth==0.6.3` konnte die alten Dateien unter `~/.garth` ohne Zugangsdaten oder SSO-Anmeldung laden, einen Profilabruf ausführen und den abgelaufenen OAuth2-Token über den noch akzeptierten OAuth1-Token erneuern. Das bestätigt nur die Nutzbarkeit über Garth; `garminconnect==0.3.13` kann dieses Zweidateienformat weiterhin nicht direkt laden. Der Haupt-CLI erhält deshalb nicht stillschweigend einen zweiten Authentifizierungsweg.
+
 ## Aufruf
 
 Die Kurzform umfasst heute und die sechs vorherigen Kalendertage:
