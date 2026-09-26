@@ -1,5 +1,9 @@
 # Derived Sleep Store and Compact Report Design
 
+> Superseded on 2026-09-26 by
+> [Sleep Dashboard and Lean Derived Store Design](./2026-09-26-sleep-dashboard-design.md).
+> This document remains as historical rationale for the rejected full-normalization approach.
+
 ## Goal
 
 Create a rebuildable SQLite store from locally preserved Garmin Raw Responses and replace the per-file exploration dump with a compact, value-free report. The store must distinguish successful but empty sleep responses from actual Nights, preserve provenance and timestamp evidence, and introduce no new runtime dependency.
